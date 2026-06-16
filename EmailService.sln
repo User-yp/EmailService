@@ -3,13 +3,15 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.11.35222.181
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Email.Domain", "Email.Domain\Email.Domain.csproj", "{F0E31DEB-900E-49EF-A76E-FFBC77B3BBF0}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Email.Domain", "Email.Domain\Email.Domain.csproj", "{F0E31DEB-900E-49EF-A76E-FFBC77B3BBF0}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Email.Extension", "Email.Extension\Email.Extension.csproj", "{1383D492-40DC-4836-9131-A09F3C29B79A}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Email.Extension", "Email.Extension\Email.Extension.csproj", "{1383D492-40DC-4836-9131-A09F3C29B79A}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Email.Infrastructure", "Email.Infrastructure\Email.Infrastructure.csproj", "{AD062516-24A6-469C-8DBF-C3A460AB83F0}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Email.Infrastructure", "Email.Infrastructure\Email.Infrastructure.csproj", "{AD062516-24A6-469C-8DBF-C3A460AB83F0}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Email.WebApi", "Email.WebApi\Email.WebApi.csproj", "{100B5B85-C1DA-4B95-AA57-A1257D66E348}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Email.WebApi", "Email.WebApi\Email.WebApi.csproj", "{100B5B85-C1DA-4B95-AA57-A1257D66E348}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Email.RPCServe", "Email.RPCServe\Email.RPCServe.csproj", "{8E4ABFF4-FA86-44DE-A32B-D85CBD04731C}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -33,6 +35,10 @@ Global
 		{100B5B85-C1DA-4B95-AA57-A1257D66E348}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{100B5B85-C1DA-4B95-AA57-A1257D66E348}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{100B5B85-C1DA-4B95-AA57-A1257D66E348}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8E4ABFF4-FA86-44DE-A32B-D85CBD04731C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8E4ABFF4-FA86-44DE-A32B-D85CBD04731C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8E4ABFF4-FA86-44DE-A32B-D85CBD04731C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8E4ABFF4-FA86-44DE-A32B-D85CBD04731C}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

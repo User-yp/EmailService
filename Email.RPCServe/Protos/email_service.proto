@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+option csharp_namespace = "Email.RPCServe";
+
+package email;
+
+service EmailService {
+  rpc SendEmail (EmailRequest) returns (EmailResponse);
+  rpc SendEmailWithAttachment (stream AttachmentChunk) returns (EmailResponse);
+}
+
+message EmailRequest {
+  repeated string to = 1;
+  repeated string cc = 2;
+  repeated string bcc = 3;
+  string from = 4;
+  string subject = 5;
+  string body = 6;
+  bool is_html = 7;
+  repeated Attachment attachments = 8;
+}
+
+message Attachment {
+  string file_name = 1;
+  string content_type = 2;
+  bytes content = 3;
+}
+
+// 用于流式上传大文件
+message AttachmentChunk {
+  oneof data {
+    EmailRequest metadata = 1;
+    FileChunk chunk = 2;
+  }
+}
+
+message FileChunk {
+  string file_name = 1;
+  string content_type = 2;
+  bytes chunk_data = 3;
+  int64 file_size = 4;
+}
+
+message EmailResponse {
+  bool success = 1;
+  string message_id = 2;
+  string error_message = 3;
+}

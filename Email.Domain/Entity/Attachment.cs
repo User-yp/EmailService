@@ -2,7 +2,7 @@
 
 namespace Email.Domain.Entity;
 
-public class Attachment : IAggregateRoot
+public partial class Attachment : IAggregateRoot
 {
     public Guid EmailMessageId { get; private set; }
     public string FileName { get; private set; }
