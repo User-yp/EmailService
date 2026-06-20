@@ -185,7 +185,7 @@ public class FtpService : IFtpService, IAsyncDisposable
 
         try
         {
-            client.Connect();
+            await Task.Run(() => client.Connect());
             _logger.LogInformation("FTP client connected successfully to {Host}", _ftpSettings.Host);
             return client;
         }

@@ -1,6 +1,6 @@
 ﻿namespace Email.Domain.Entity;
 
-public class EmailRecord : IAggregateRoot
+public class EmailRecord : AggregateRoot
 {
     public Guid EmailMessageId { get; private set; }
 

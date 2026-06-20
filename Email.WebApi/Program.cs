@@ -30,5 +30,6 @@ app.UseHttpsRedirection();
 app.UseAuthorization();
 
 app.MapControllers();
+app.AddGRpc();
 
 app.Run();

@@ -2,12 +2,11 @@
 using Email.Domain.IRepository;
 using Email.Extension.Attributes;
 using Microsoft.Extensions.DependencyInjection;
-using System.Net.Mail;
 using Attachment = Email.Domain.Entity.Attachment;
 
 namespace Email.Infrastructure.Application;
 [Service(ServiceLifetime.Scoped)]
-public class DomainService //: IEmailService
+public class DomainService
 {
     private readonly IEmailRepository _emailRepository;
     private readonly IEmailHandler _emailHandler;
@@ -30,9 +29,9 @@ public class DomainService //: IEmailService
             await _emailHandler.SendEmailAsync(emailMessage);
             emailMessage.MarkAsSent();
         }
-        catch
+        catch (Exception ex)
         {
-            emailMessage.MarkAsFailed();
+            emailMessage.MarkAsFailed(ex.Message, ex.ToString());
             throw;
         }
         finally
@@ -52,21 +51,4 @@ public class DomainService //: IEmailService
     {
         return await _emailRepository.GetAttachmentByIdAsync(attachmentId);
     }
-    /*private async Task UploadAttachmentsToFtpAsync(EmailMessage emailMessage)
-    {
-        foreach (var attachment in emailMessage.Attachments.Where(a => !a.IsStoredInFtp))
-        {
-            try
-            {
-                using var memoryStream = new MemoryStream(attachment.Content);
-                var ftpFilePath = await _ftpService.UploadFileAsync(memoryStream, attachment.FileName, emailMessage.Id);
-
-                // 更新附件的FTP信息
-                attachment.UpdateFtpInfo(ftpFilePath);
-            }
-            catch (Exception ex)
-            {
-            }
-        }
-    }*/
 }

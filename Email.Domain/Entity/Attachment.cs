@@ -1,8 +1,7 @@
-﻿using System.Net.Mail;
-
+﻿
 namespace Email.Domain.Entity;
 
-public partial class Attachment : IAggregateRoot
+public partial class Attachment : AggregateRoot
 {
     public Guid EmailMessageId { get; private set; }
     public string FileName { get; private set; }

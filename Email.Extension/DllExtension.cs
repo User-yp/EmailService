@@ -36,7 +36,11 @@ public static class DllExtension
                 services.AddSingleton(type, config);
             }
         }
-        catch (Exception) { }
+        catch (Exception ex)
+        {
+            // Redis 不可用时不应阻止应用启动，但需记录日志
+            System.Diagnostics.Debug.WriteLine($"Warning: Failed to load configuration from Redis: {ex.Message}");
+        }
         finally
         {
             tempConnection.Close();
@@ -58,7 +62,7 @@ public static class DllExtension
             {
                 case ServiceLifetime.Singleton:
                     if (interfaces != null)
-                        service.AddScoped(interfaces, type);
+                        service.AddSingleton(interfaces, type);
                     else
                         service.AddSingleton(type);
                     break;
@@ -70,7 +74,7 @@ public static class DllExtension
                     break;
                 case ServiceLifetime.Transient:
                     if (interfaces != null)
-                        service.AddScoped(interfaces, type);
+                        service.AddTransient(interfaces, type);
                     else
                         service.AddTransient(type);
                     break;

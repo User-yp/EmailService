@@ -1,6 +1,6 @@
 ﻿namespace Email.Domain.Entity;
 
-public class IAggregateRoot
+public class AggregateRoot
 {
     public Guid Id { get; protected set; } = Guid.NewGuid();
     public DateTime CreatedAt { get; protected set; } = DateTime.Now;

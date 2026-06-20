@@ -24,7 +24,7 @@ public class GrpcEmailService : EmailService.EmailServiceBase
                 )).ToList();
 
             // 调用现有的应用服务
-            await _emailApp.SendEmailAsync(
+            var messageId = await _emailApp.SendEmailAsync(
                 request.To.ToList(),
                 request.Cc?.ToList(),
                 request.Bcc?.ToList(),
@@ -38,7 +38,7 @@ public class GrpcEmailService : EmailService.EmailServiceBase
             return new EmailResponse
             {
                 Success = true,
-                MessageId = Guid.NewGuid().ToString()
+                MessageId = messageId.ToString()
             };
         }
         catch (Exception ex)
@@ -55,11 +55,11 @@ public class GrpcEmailService : EmailService.EmailServiceBase
         IAsyncStreamReader<AttachmentChunk> requestStream,
         ServerCallContext context)
     {
+        EmailRequest? metadata = null;
+        Dictionary<string, MemoryStream> fileStreams = new();
+
         try
         {
-            EmailRequest? metadata = null;
-            Dictionary<string, MemoryStream> fileStreams = new();
-
             // 处理流式请求
             while (await requestStream.MoveNext())
             {
@@ -104,7 +104,7 @@ public class GrpcEmailService : EmailService.EmailServiceBase
             }
 
             // 调用现有的应用服务
-            await _emailApp.SendEmailAsync(
+            var messageId = await _emailApp.SendEmailAsync(
                 metadata.To.ToList(),
                 metadata.Cc?.ToList(),
                 metadata.Bcc?.ToList(),
@@ -118,7 +118,7 @@ public class GrpcEmailService : EmailService.EmailServiceBase
             return new EmailResponse
             {
                 Success = true,
-                MessageId = Guid.NewGuid().ToString()
+                MessageId = messageId.ToString()
             };
         }
         catch (Exception ex)
@@ -128,6 +128,14 @@ public class GrpcEmailService : EmailService.EmailServiceBase
                 Success = false,
                 ErrorMessage = ex.Message
             };
+        }
+        finally
+        {
+            // 释放所有临时文件流
+            foreach (var stream in fileStreams.Values)
+            {
+                stream.Dispose();
+            }
         }
     }
 }

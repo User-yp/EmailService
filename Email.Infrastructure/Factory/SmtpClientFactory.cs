@@ -1,22 +1,24 @@
-﻿using Email.Extension.Attributes;
+using Email.Extension.Attributes;
 using Email.Extension.Option;
-using FluentFTP;
 using MailKit.Net.Smtp;
 using MailKit.Security;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace Email.Infrastructure.Factory;
+
 [Service(ServiceLifetime.Singleton)]
-public class SmtpClientFactory : IDisposable
+public class SmtpClientFactory : IDisposable, IAsyncDisposable
 {
     private SmtpClient? _smtpClient;
     private bool _disposed = false;
     private DateTime _lastActivity;
+    private DateTime _lastHealthCheck;
     private readonly SmtpSettings _smtpSettings;
     private readonly TimeSpan _inactivityTimeout;
-    private readonly object _lockObject = new object();
+    private readonly TimeSpan _monitorInterval;
+    private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
+    private readonly SemaphoreSlim _connectionSemaphore = new(1, 1);
     private readonly ILogger<SmtpClientFactory> _logger;
     private readonly CancellationTokenSource _monitorCts;
     private Task? _monitorTask;
@@ -26,7 +28,11 @@ public class SmtpClientFactory : IDisposable
         _logger = logger;
         _smtpSettings = smtpSettings;
         _lastActivity = DateTime.UtcNow;
+        _lastHealthCheck = DateTime.UtcNow;
         _inactivityTimeout = TimeSpan.FromMinutes(_smtpSettings.InactivityTimeout);
+        _monitorInterval = _smtpSettings.MonitorInterval > 0
+            ? TimeSpan.FromSeconds(_smtpSettings.MonitorInterval)
+            : TimeSpan.FromMinutes(1);
         _monitorCts = new CancellationTokenSource();
 
         // 启动后台监控任务
@@ -39,19 +45,49 @@ public class SmtpClientFactory : IDisposable
     {
         ThrowIfDisposed();
 
-        // 首先检查现有连接是否可用
-        lock (_lockObject)
+        // 快速检查：现有连接是否可用
+        var existingClient = GetExistingClient();
+        if (existingClient != null)
         {
-            if (IsConnected && IsAuthenticated && _smtpClient != null)
-            {
-                _lastActivity = DateTime.Now;
-                _logger.LogDebug("Reusing existing SMTP connection");
-                return _smtpClient;
-            }
+            _lastActivity = DateTime.UtcNow;
+            _logger.LogDebug("Reusing existing SMTP connection");
+            return existingClient;
         }
 
-        // 创建新连接
-        return await CreateAndConnectClientAsync();
+        // 需要创建新连接，使用信号量确保只有一个线程执行连接创建
+        await _connectionSemaphore.WaitAsync(_monitorCts.Token);
+        try
+        {
+            // 双重检查：等待信号量期间可能已有其他线程创建了连接
+            var doubleCheckClient = GetExistingClient();
+            if (doubleCheckClient != null)
+            {
+                _lastActivity = DateTime.UtcNow;
+                return doubleCheckClient;
+            }
+
+            await CreateAndConnectClientAsync();
+            return _smtpClient!;
+        }
+        finally
+        {
+            _connectionSemaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// 获取当前可用的已连接客户端（线程安全）
+    /// </summary>
+    private SmtpClient? GetExistingClient()
+    {
+        lock (_connectionSemaphore)
+        {
+            if (_smtpClient is { IsConnected: true, IsAuthenticated: true })
+            {
+                return _smtpClient;
+            }
+            return null;
+        }
     }
 
     public async Task<bool> TestConnectionAsync()
@@ -88,7 +124,15 @@ public class SmtpClientFactory : IDisposable
 
         _logger.LogInformation("Manual reconnect requested");
         await CloseConnectionAsync();
-        await CreateAndConnectClientAsync();
+        await _connectionSemaphore.WaitAsync(_monitorCts.Token);
+        try
+        {
+            await CreateAndConnectClientAsync();
+        }
+        finally
+        {
+            _connectionSemaphore.Release();
+        }
     }
 
     public async Task ResetConnectionAsync()
@@ -98,7 +142,15 @@ public class SmtpClientFactory : IDisposable
         _logger.LogInformation("Resetting SMTP connection");
         await CloseConnectionAsync();
         await Task.Delay(TimeSpan.FromSeconds(1), _monitorCts.Token);
-        await CreateAndConnectClientAsync();
+        await _connectionSemaphore.WaitAsync(_monitorCts.Token);
+        try
+        {
+            await CreateAndConnectClientAsync();
+        }
+        finally
+        {
+            _connectionSemaphore.Release();
+        }
     }
 
     private async Task MonitorConnectionAsync(CancellationToken cancellationToken)
@@ -109,14 +161,15 @@ public class SmtpClientFactory : IDisposable
         {
             try
             {
-                await Task.Delay(TimeSpan.FromMinutes(1), cancellationToken);
+                await Task.Delay(_monitorInterval, cancellationToken);
 
                 await CheckAndCleanupInactiveConnectionAsync();
 
-                // 每5分钟测试一次连接健康度
-                if (DateTime.Now.Minute % 5 == 0)
+                // 按健康检查间隔测试连接
+                if (DateTime.UtcNow - _lastHealthCheck >= _healthCheckInterval)
                 {
                     await TestAndRecoverConnectionAsync();
+                    _lastHealthCheck = DateTime.UtcNow;
                 }
             }
             catch (OperationCanceledException)
@@ -136,18 +189,18 @@ public class SmtpClientFactory : IDisposable
     private async Task CheckAndCleanupInactiveConnectionAsync()
     {
         bool shouldCleanup = false;
-        lock (_lockObject)
+        lock (_connectionSemaphore)
         {
-            if (_smtpClient != null && (IsConnected || IsAuthenticated))
+            if (_smtpClient != null && (_smtpClient.IsConnected || _smtpClient.IsAuthenticated))
             {
-                var inactivityTime = DateTime.Now - _lastActivity;
+                var inactivityTime = DateTime.UtcNow - _lastActivity;
                 shouldCleanup = inactivityTime > _inactivityTimeout;
             }
         }
 
         if (shouldCleanup)
         {
-            _logger.LogInformation("Connection inactive for , will cleanup");
+            _logger.LogInformation("Connection inactive for over {Timeout}min, closing", _inactivityTimeout.TotalMinutes);
             await CloseConnectionAsync();
         }
     }
@@ -156,19 +209,19 @@ public class SmtpClientFactory : IDisposable
     {
         try
         {
-            var status = false;
-            lock (_lockObject)
+            SmtpClient? clientToCheck;
+            lock (_connectionSemaphore)
             {
-                status = IsConnected && IsAuthenticated;
+                clientToCheck = _smtpClient;
             }
 
-            if (status)
+            if (clientToCheck is { IsConnected: true, IsAuthenticated: true })
             {
-                // 测试连接是否仍然健康
-                var isHealthy = await TestConnectionAsync();
+                // 使用 NoOp 命令测试现有连接的真实健康状况
+                var isHealthy = await TestExistingConnectionAsync(clientToCheck);
                 if (!isHealthy)
                 {
-                    _logger.LogWarning("Connection test failed, attempting recovery");
+                    _logger.LogWarning("Existing connection test failed, attempting recovery");
                     await ResetConnectionAsync();
                 }
             }
@@ -179,7 +232,27 @@ public class SmtpClientFactory : IDisposable
         }
     }
 
-    private async Task<SmtpClient> CreateAndConnectClientAsync()
+    /// <summary>
+    /// 测试现有连接是否健康（发送 NOOP 命令）
+    /// </summary>
+    private async Task<bool> TestExistingConnectionAsync(SmtpClient client)
+    {
+        try
+        {
+            await client.NoOpAsync(_monitorCts.Token);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "NOOP command failed on existing connection");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 创建并连接新的 SMTP 客户端。调用方必须持有 _connectionSemaphore。
+    /// </summary>
+    private async Task CreateAndConnectClientAsync()
     {
         ThrowIfDisposed();
 
@@ -190,7 +263,11 @@ public class SmtpClientFactory : IDisposable
         {
             client.Timeout = _smtpSettings.Timeout;
 
-            await client.ConnectAsync(_smtpSettings.Server, _smtpSettings.Port, GetSocketOptions(), _monitorCts.Token);
+            await client.ConnectAsync(
+                _smtpSettings.Server,
+                _smtpSettings.Port,
+                GetSocketOptions(),
+                _monitorCts.Token);
 
             _logger.LogInformation("SMTP connected to {Server}:{Port}",
                 _smtpSettings.Server, _smtpSettings.Port);
@@ -198,24 +275,50 @@ public class SmtpClientFactory : IDisposable
             // 认证
             if (!string.IsNullOrEmpty(_smtpSettings.Username) && !string.IsNullOrEmpty(_smtpSettings.Password))
             {
-                await client.AuthenticateAsync(_smtpSettings.Username, _smtpSettings.Password, _monitorCts.Token);
+                await client.AuthenticateAsync(
+                    _smtpSettings.Username,
+                    _smtpSettings.Password,
+                    _monitorCts.Token);
                 _logger.LogInformation("SMTP authentication successful");
             }
-            lock (_lockObject)
-            {
-                // 清理旧连接
-                _smtpClient?.Dispose();
-                _smtpClient = client;
-                _lastActivity = DateTime.Now;
-            }
 
-            return client;
+            // 替换旧连接（在信号量保护下）
+            var oldClient = Interlocked.Exchange(ref _smtpClient, client);
+            _lastActivity = DateTime.UtcNow;
+
+            // 异步释放旧连接
+            if (oldClient != null)
+            {
+                _ = DisposeOldClientAsync(oldClient);
+            }
+        }
+        catch
+        {
+            client.Dispose();
+            _logger.LogError("Failed to create SMTP connection");
+            throw new SmtpConnectionException("Failed to establish SMTP connection");
+        }
+    }
+
+    /// <summary>
+    /// 异步释放旧客户端，避免阻塞当前操作
+    /// </summary>
+    private async Task DisposeOldClientAsync(SmtpClient oldClient)
+    {
+        try
+        {
+            if (oldClient.IsConnected)
+            {
+                await oldClient.DisconnectAsync(true);
+            }
         }
         catch (Exception ex)
         {
-            client.Dispose();
-            _logger.LogError(ex, "Failed to create SMTP connection");
-            throw new SmtpConnectionException("Failed to establish SMTP connection", ex);
+            _logger.LogWarning(ex, "Error disconnecting old SMTP client");
+        }
+        finally
+        {
+            oldClient.Dispose();
         }
     }
 
@@ -223,13 +326,14 @@ public class SmtpClientFactory : IDisposable
     {
         ThrowIfDisposed();
 
-        SmtpClient? clientToDispose = null;
-        lock (_lockObject)
+        SmtpClient? clientToDispose;
+        lock (_connectionSemaphore)
         {
-            if (_smtpClient == null) return;
             clientToDispose = _smtpClient;
             _smtpClient = null;
         }
+
+        if (clientToDispose == null) return;
 
         try
         {
@@ -246,7 +350,7 @@ public class SmtpClientFactory : IDisposable
         finally
         {
             clientToDispose.Dispose();
-            _lastActivity = DateTime.Now;
+            _lastActivity = DateTime.UtcNow;
         }
     }
 
@@ -257,9 +361,9 @@ public class SmtpClientFactory : IDisposable
     {
         get
         {
-            lock (_lockObject)
+            lock (_connectionSemaphore)
             {
-                return _smtpClient != null && _smtpClient.IsConnected;
+                return _smtpClient is { IsConnected: true };
             }
         }
     }
@@ -268,9 +372,9 @@ public class SmtpClientFactory : IDisposable
     {
         get
         {
-            lock (_lockObject)
+            lock (_connectionSemaphore)
             {
-                return _smtpClient != null && _smtpClient.IsAuthenticated;
+                return _smtpClient is { IsAuthenticated: true };
             }
         }
     }
@@ -301,269 +405,44 @@ public class SmtpClientFactory : IDisposable
             _logger.LogWarning(ex, "Error waiting for monitor task to complete");
         }
 
-        // 清理资源
-        _monitorCts.Dispose();
-
-        // 关闭连接
-        CloseConnectionAsync().GetAwaiter().GetResult();
-
-        GC.SuppressFinalize(this);
-    }
-
-    ~SmtpClientFactory()
-    {
-        Dispose();
-    }
-}
-
-public class SmtpConnectionException : Exception
-{
-    public SmtpConnectionException(string message, Exception innerException)
-        : base(message, innerException)
-    {
-    }
-}
-/*public class SmtpClientFactory 
-{
-    private SmtpClient? _smtpClient;
-    private bool _disposed = false;
-    private DateTime LastActivity;
-    private readonly SmtpSettings _smtpSettings;
-    private readonly int _monitorInterval;
-    private readonly TimeSpan _inactivityTimeout;
-    private readonly object _lockObject = new object();
-    private readonly ILogger<SmtpClientFactory> _logger;
-    private readonly CancellationTokenSource _monitorCts;
-    private Task? _monitorTask;
-
-    public SmtpClientFactory(SmtpSettings smtpSettings, ILogger<SmtpClientFactory> logger)
-    {
-        _logger = logger;
-        _smtpSettings = smtpSettings;
-        LastActivity = DateTime.Now;
-        _monitorInterval = smtpSettings.MonitorInterval;
-        _inactivityTimeout = TimeSpan.FromMinutes(smtpSettings.InactivityTimeout);
-        _monitorCts = new CancellationTokenSource();
-        // 启动后台监控任务
-        _monitorTask = Task.Run(() => MonitorConnectionAsync(_monitorCts.Token));
-    }
-
-    private  async Task ExecuteAsync(CancellationToken stoppingToken=default)
-    {
-        _logger.LogInformation("SMTP Connection Monitor started");
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                await MonitorConnectionAsync();
-                await Task.Delay(_monitorInterval, stoppingToken);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in SMTP connection monitor");
-                await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
-            }
-        }
-        _logger.LogInformation("SMTP Connection Monitor stopped");
-    }
-    private async Task MonitorConnectionAsync()
-    {
-        if (_smtpClient == null)
-            return;
-
-        // 检查长时间未活动
-        if (IsConnected||IsAuthenticated)
-        {
-            var inactivityTime = DateTime.Now - LastActivity;
-            if (inactivityTime > _inactivityTimeout)
-            {
-                _logger.LogInformation("SMTP connection inactive for {InactivityTime}, closing", inactivityTime);
-                await CloseConnectionAsync();
-            }
-        }
-        //暂时不用，或者者延长时间
-        //await TestConnAsync();
-    }
-
-    private async Task TestConnAsync()
-    {
-        var isAlive = await TestConnectionAsync();
-        if (!isAlive)
-        {
-            _logger.LogWarning("SMTP connection test failed, connection may be stale");
-            await ResetConnectionAsync();
-        }
-    }
-
-    public async Task<SmtpClient> GetConnectedClientAsync()
-    {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(SmtpClientFactory));
-
-        lock (_lockObject)
-        {
-            if (IsConnected&&IsAuthenticated && _smtpClient != null)
-            {
-                LastActivity = DateTime.Now;
-                return _smtpClient;
-            }
-        }
-        return await CreateAndConnectClientAsync();
-    }
-
-    public async Task<bool> TestConnectionAsync()
-    {
-        try
-        {
-            using var testClient = new SmtpClient();
-            await testClient.ConnectAsync(_smtpSettings.Server,_smtpSettings.Port,GetSocketOptions());
-
-            if (testClient.IsConnected)
-            {
-                _logger.LogInformation( "SMTP connection test success");
-                await testClient.DisconnectAsync(true);
-                return true;
-            }
-            return false;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "SMTP connection test failed");
-            return false;
-        }
-    }
-
-    public async Task ReconnectAsync()
-    {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(SmtpClientFactory));
-
-        await CloseConnectionAsync();
-        await CreateAndConnectClientAsync();
-    }
-
-    public async Task CloseConnectionAsync()
-    {
-        if (_disposed) return;
-
-        lock (_lockObject)
-        {
-            if (_smtpClient == null) return;
-        }
-
-        try
-        {
-            if (_smtpClient.IsConnected)
-            {
-                await _smtpClient.DisconnectAsync(true);
-                _logger.LogInformation("SMTP connection closed gracefully");
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Error while closing SMTP connection");
-        }
-        finally
-        {
-            lock (_lockObject)
-            {
-                _smtpClient?.Dispose();
-                LastActivity = DateTime.Now;
-            }
-        }
-    }
-
-    public async Task ResetConnectionAsync()
-    {
-        await CloseConnectionAsync();
-        await Task.Delay(1000); // 等待1秒后重连
-        await CreateAndConnectClientAsync();
-    }
-
-    public bool IsConnected
-    {
-        get
-        {
-            lock (_lockObject)
-            {
-                return _smtpClient != null &&_smtpClient.IsConnected;
-            }
-        }
-    }
-
-    public bool IsAuthenticated
-    {
-        get
-        {
-            lock (_lockObject)
-            {
-                return _smtpClient != null &&_smtpClient.IsAuthenticated;
-            }
-        }
-    }
-
-    private async Task<SmtpClient> CreateAndConnectClientAsync()
-    {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(SmtpClientFactory));
-
-        var client = new SmtpClient();
-        try
-        {
-            // 设置连接超时
-            client.Timeout = _smtpSettings.Timeout;// _smtpSettings.Timeout;
-
-            await client.ConnectAsync(_smtpSettings.Server,_smtpSettings.Port, GetSocketOptions());
-
-            lock (_lockObject)
-            {
-                LastActivity = DateTime.Now;
-            }
-
-            _logger.LogInformation("SMTP connected to {Server}:{Port}",_smtpSettings.Server, _smtpSettings.Port);
-
-            // 认证
-            if (!string.IsNullOrEmpty(_smtpSettings.Username) &&!string.IsNullOrEmpty(_smtpSettings.Password))
-            {
-                await client.AuthenticateAsync(_smtpSettings.Username, _smtpSettings.Password);
-                _logger.LogInformation("SMTP authentication successful");
-            }
-
-            lock (_lockObject)
-            {
-                _smtpClient?.Dispose();
-                _smtpClient = client;
-                return _smtpClient;
-            }
-        }
-        catch (Exception ex)
-        {
-            client.Dispose();
-            _logger.LogError(ex, "Failed to create and connect SMTP client");
-            throw new SmtpConnectionException("Failed to establish SMTP connection", ex);
-        }
-    }
-    private SecureSocketOptions GetSocketOptions() =>
-        _smtpSettings.UseSsl ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls;
-
-    public void Dispose()
-    {
-        if (_disposed) return;
-
-        _disposed = true;
-
+        // 同步关闭连接（Dispose 模式下的必要妥协）
         try
         {
             CloseConnectionAsync().GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error during disposal");
+            _logger.LogWarning(ex, "Error closing connection during dispose");
         }
+
+        _monitorCts.Dispose();
+        _connectionSemaphore.Dispose();
+
+        GC.SuppressFinalize(this);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        _logger.LogInformation("Disposing SmtpClientFactory (async)");
+
+        _monitorCts.Cancel();
+        try
+        {
+            if (_monitorTask != null)
+                await _monitorTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Monitor task did not complete within timeout");
+        }
+
+        await CloseConnectionAsync();
+
+        _monitorCts.Dispose();
+        _connectionSemaphore.Dispose();
 
         GC.SuppressFinalize(this);
     }
@@ -572,13 +451,12 @@ public class SmtpConnectionException : Exception
     {
         Dispose();
     }
-    
 }
 
 public class SmtpConnectionException : Exception
 {
-    public SmtpConnectionException(string message, Exception innerException)
+    public SmtpConnectionException(string message, Exception? innerException = null)
         : base(message, innerException)
     {
     }
-}*/
+}

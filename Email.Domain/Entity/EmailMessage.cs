@@ -1,6 +1,6 @@
 ﻿namespace Email.Domain.Entity;
 
-public partial class EmailMessage : IAggregateRoot
+public partial class EmailMessage : AggregateRoot
 {
     public List<string> To { get; private set; }
     public List<string>? Cc { get; private set; }

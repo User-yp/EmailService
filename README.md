@@ -43,7 +43,7 @@ EmailService/
 ├── Email.Domain/                             # 领域层（实体、接口、枚举）
 │   ├── Common.cs                             # EmailStatus 枚举
 │   ├── Entity/
-│   │   ├── IAggregateRoot.cs                 # 聚合根基类（Id、时间戳、软删除）
+│   │   ├── AggregateRoot.cs                  # 聚合根基类（Id、时间戳、软删除）
 │   │   ├── EmailMessage.cs                   # 邮件消息实体（partial）
 │   │   ├── EmailRecord.cs                    # 邮件发送记录实体
 │   │   └── Attachment.cs                     # 附件实体（partial）

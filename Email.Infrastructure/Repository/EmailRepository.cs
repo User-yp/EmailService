@@ -107,6 +107,9 @@ public class EmailRepository : IEmailRepository
             }
             catch (Exception ex)
             {
+                // FTP 上传失败不阻止邮件发送流程，记录日志后继续
+                System.Diagnostics.Debug.WriteLine(
+                    $"Warning: Failed to upload attachment {attachment.FileName} to FTP: {ex.Message}");
             }
         }
     }
