@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-and-test:
+    name: 编译与单元测试
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: 还原依赖
+        run: dotnet restore EmailService.sln
+
+      - name: 编译（Release）
+        run: dotnet build EmailService.sln --configuration Release --no-restore
+
+      - name: 运行单元测试
+        run: dotnet test EmailService.sln --configuration Release --no-build --no-restore --verbosity normal

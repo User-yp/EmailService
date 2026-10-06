@@ -1,5 +1,7 @@
 # EmailService
 
+![CI](https://github.com/User-yp/EmailService/actions/workflows/ci.yml/badge.svg)
+
 基于 .NET 8 构建的高性能邮件发送微服务，提供 REST API 与 gRPC 双协议支持，内置连接池管理、附件 FTP 存储、Redis 动态配置以及邮件状态追踪与重试机制。
 
 ---
