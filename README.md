@@ -96,13 +96,19 @@ EmailService/
 │   ├── GrpcEmailService.cs                   # gRPC 服务实现（含流式上传）
 │   └── RPCExtension.cs                       # gRPC 注册扩展
 │
-└── Email.WebApi/                             # Web API 宿主
+├── Email.WebApi/                             # Web API 宿主
     ├── Program.cs                             # 应用入口
     ├── Controllers/
     │   └── TestController.cs                 # 测试控制器
     ├── appsettings.json                       # 静态配置文件
     └── Properties/
         └── launchSettings.json                # 启动配置
+│
+└── Email.Tests/                              # xunit 单元测试（不依赖外部服务）
+    ├── Domain/                               # 重试策略、软删除、附件等领域规则
+    ├── Application/                          # DomainService 编排（内存替身）
+    ├── Infrastructure/                       # DbContext 软删除改写（EF InMemory）
+    └── Fakes/                                # 手写测试替身（仓储 / SMTP 处理器）
 ```
 
 ---
@@ -313,6 +319,34 @@ HTTP / gRPC 请求
 2. 再读取 Redis Hash（`RedisOption:ConfigKey`）中的同名字段，**同名项以 Redis 为准**；
 3. Redis 不可用时打印告警并继续使用静态配置；
 4. `ConnectionOption` / `SmtpSettings` / `FtpSettings` 三者只要有一个取不到，**启动即失败并给出明确提示**，不再出现"启动成功、请求时才报错"。
+
+---
+
+## 测试
+
+### 运行
+
+```bash
+dotnet test                                               # 运行解决方案中的全部测试
+dotnet test Email.Tests                                   # 只跑单元测试项目
+dotnet test --filter FullyQualifiedName~EmailRecordTests  # 按测试类筛选
+```
+
+### 覆盖范围（51 个用例）
+
+| 测试类 | 覆盖内容 |
+|---|---|
+| `EmailRecordTests` | 重试策略：次数上限、冷却时间、状态流转、失败地址去重、错误信息按列长截断 |
+| `EmailMessageTests` | 工厂方法校验、附件关联、`MarkAsSent/Failed/Retry` 委托、软删除级联 |
+| `AttachmentTests` | `FileSize` 按字节存储、FTP 归档后清空数据库内容、空路径不误判为已归档 |
+| `EmailDbContextSoftDeleteTests` | `Remove` 被改写为软删除、全局查询过滤器生效、级联软删除、附件字段落库（EF InMemory） |
+| `DomainServiceTests` | 发送编排（入库→发送→标记状态→附件归档）、失败仍落库、FTP 归档失败不影响发送、重试策略、软删除委托 |
+
+### 设计取舍
+
+- **不依赖外部服务**：SQL Server 用 EF Core InMemory 提供程序，SMTP / FTP / Redis 用手写替身（`Email.Tests/Fakes`），因此离线和 CI 环境都能直接跑完。
+- **手写替身而非 Mock 框架**：接口成员不多，手写替身让"调用了几次、传了什么参数"一目了然，也少一个依赖。
+- **不引入假时钟**：冷却期相关行为通过把 `cooldownPeriod` 分别传 `TimeSpan.Zero` 和较大值来验证两个分支。
 
 ---
 
