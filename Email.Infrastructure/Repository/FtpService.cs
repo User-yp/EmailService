@@ -144,6 +144,23 @@ public class FtpService : IFtpService, IAsyncDisposable
         return $"{timeSlotDir}/{emailGuid}/{fileName}";
     }
 
+    /// <summary>
+    /// 连接探测：首次调用会建立连接，返回当前连接状态。
+    /// </summary>
+    public async Task<bool> TestConnectionAsync()
+    {
+        try
+        {
+            var client = await _ftpClient;
+            return client.IsConnected;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "FTP 连接测试失败：{Host}:{Port}", _ftpSettings.Host, _ftpSettings.Port);
+            return false;
+        }
+    }
+
     private async Task EnsureDirectoryExistsAsync(string directoryPath)
     {
         try
@@ -199,10 +216,20 @@ public class FtpService : IFtpService, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_ftpClient != null)
+        // 从未建立过连接时直接返回，否则 await 会触发一次“为了关闭而建连”
+        if (!_ftpClient.IsValueCreated)
+        {
+            return;
+        }
+
+        try
         {
             var client = await _ftpClient;
             client.Dispose();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "释放 FTP 连接时出现异常");
         }
     }
     // 可以添加这些方法到 IFtpService 接口
@@ -243,6 +270,8 @@ public class AsyncLazy<T>
     }
 
     public Task<T> Value => _lazyTask.Value;
+
+    public bool IsValueCreated => _lazyTask.IsValueCreated;
 
     public TaskAwaiter<T> GetAwaiter() => _lazyTask.Value.GetAwaiter();
 }

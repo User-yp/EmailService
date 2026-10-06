@@ -4,6 +4,7 @@ using MailKit.Net.Smtp;
 using MailKit.Security;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using MimeKit;
 
 namespace Email.Infrastructure.Factory;
 
@@ -19,6 +20,9 @@ public class SmtpClientFactory : IDisposable, IAsyncDisposable
     private readonly TimeSpan _monitorInterval;
     private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
     private readonly SemaphoreSlim _connectionSemaphore = new(1, 1);
+    // MailKit 的 SmtpClient 不是线程安全的：同一连接上的并发发送会打乱 SMTP 协议流，
+    // 因此所有发送都必须在这里串行化。
+    private readonly SemaphoreSlim _sendSemaphore = new(1, 1);
     private readonly ILogger<SmtpClientFactory> _logger;
     private readonly CancellationTokenSource _monitorCts;
     private Task? _monitorTask;
@@ -41,7 +45,7 @@ public class SmtpClientFactory : IDisposable, IAsyncDisposable
         _logger.LogInformation("SmtpClientFactory initialized as singleton");
     }
 
-    public async Task<SmtpClient> GetConnectedClientAsync()
+    private async Task<SmtpClient> GetConnectedClientAsync()
     {
         ThrowIfDisposed();
 
@@ -72,6 +76,29 @@ public class SmtpClientFactory : IDisposable, IAsyncDisposable
         finally
         {
             _connectionSemaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// 发送邮件（串行化）。MailKit 的 SmtpClient 不支持并发发送，
+    /// 同一连接上的并发 SendAsync 会造成协议流错乱，所以这里用信号量把发送排成队列。
+    /// </summary>
+    public async Task SendAsync(MimeMessage message, CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(message);
+
+        await _sendSemaphore.WaitAsync(_monitorCts.Token);
+        try
+        {
+            var client = await GetConnectedClientAsync();
+            _lastActivity = DateTime.UtcNow;
+            await client.SendAsync(message, cancellationToken);
+            _lastActivity = DateTime.UtcNow;
+        }
+        finally
+        {
+            _sendSemaphore.Release();
         }
     }
 
@@ -163,13 +190,28 @@ public class SmtpClientFactory : IDisposable, IAsyncDisposable
             {
                 await Task.Delay(_monitorInterval, cancellationToken);
 
-                await CheckAndCleanupInactiveConnectionAsync();
-
-                // 按健康检查间隔测试连接
-                if (DateTime.UtcNow - _lastHealthCheck >= _healthCheckInterval)
+                // 连接维护必须避开正在进行的发送：NOOP 探测和断开都会与 SendAsync 争用同一连接。
+                // 拿不到发送权说明当前有邮件在发，本轮跳过即可。
+                if (!await _sendSemaphore.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken))
                 {
-                    await TestAndRecoverConnectionAsync();
-                    _lastHealthCheck = DateTime.UtcNow;
+                    _logger.LogDebug("SMTP 正在发送邮件，跳过本轮连接维护");
+                    continue;
+                }
+
+                try
+                {
+                    await CheckAndCleanupInactiveConnectionAsync();
+
+                    // 按健康检查间隔测试连接
+                    if (DateTime.UtcNow - _lastHealthCheck >= _healthCheckInterval)
+                    {
+                        await TestAndRecoverConnectionAsync();
+                        _lastHealthCheck = DateTime.UtcNow;
+                    }
+                }
+                finally
+                {
+                    _sendSemaphore.Release();
                 }
             }
             catch (OperationCanceledException)
@@ -417,6 +459,7 @@ public class SmtpClientFactory : IDisposable, IAsyncDisposable
 
         _monitorCts.Dispose();
         _connectionSemaphore.Dispose();
+        _sendSemaphore.Dispose();
 
         GC.SuppressFinalize(this);
     }
@@ -443,6 +486,7 @@ public class SmtpClientFactory : IDisposable, IAsyncDisposable
 
         _monitorCts.Dispose();
         _connectionSemaphore.Dispose();
+        _sendSemaphore.Dispose();
 
         GC.SuppressFinalize(this);
     }

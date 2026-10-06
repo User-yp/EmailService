@@ -45,14 +45,7 @@ public class EmailHandler : IEmailHandler
             try
             {
                 var message = await BuildMimeMessageAsync(emailMessage);
-                var client = await _smtpClientFactory.GetConnectedClientAsync();
-
-                if (client is not { IsConnected: true })
-                {
-                    throw new SmtpConnectionException("SMTP client is not connected");
-                }
-
-                await client.SendAsync(message);
+                await _smtpClientFactory.SendAsync(message);
 
                 _logger.LogInformation("Email sent successfully to {Recipients}",
                     string.Join(", ", emailMessage.To));

@@ -41,25 +41,35 @@ public class EmailRecord : AggregateRoot
     }
 
     // 标记为发送失败
-    public void MarkAsFailed(string errorMessage = null, string errorDetails = null)
+    public void MarkAsFailed(string? errorMessage = null, string? errorDetails = null)
     {
         Status = EmailStatus.Failed;
         FailedTime = DateTime.Now;
-        ErrorMessage = errorMessage;
-        ErrorDetails = errorDetails;
+        ErrorMessage = Truncate(errorMessage, MaxErrorMessageLength);
+        ErrorDetails = Truncate(errorDetails, MaxErrorDetailsLength);
         UpdateTimestamp();
     }
 
     // 重试邮件
-    public void MarkForRetry(List<string> failedAdress, string errorMessage = null, string errorDetails = null)
+    public void MarkForRetry(List<string>? failedAdress, string? errorMessage = null, string? errorDetails = null)
     {
         Status = EmailStatus.Retry;
         RetryCount++;
-        FailedAdress?.AddRange(failedAdress);
         LastRetryTime = DateTime.Now;
-        ErrorMessage = errorMessage;
-        ErrorDetails = errorDetails;
+        ErrorMessage = Truncate(errorMessage, MaxErrorMessageLength);
+        ErrorDetails = Truncate(errorDetails, MaxErrorDetailsLength);
         UpdateTimestamp();
+
+        if (failedAdress is not { Count: > 0 })
+            return;
+
+        FailedAdress ??= new List<string>();
+        foreach (var address in failedAdress)
+        {
+            // 避免多次重试后失败地址重复堆积
+            if (!FailedAdress.Contains(address, StringComparer.OrdinalIgnoreCase))
+                FailedAdress.Add(address);
+        }
     }
 
     // 重置重试计数
@@ -69,6 +79,14 @@ public class EmailRecord : AggregateRoot
         LastRetryTime = null;
         UpdateTimestamp();
     }
+
+    // 错误信息长度上限，与 EF 配置中 ErrorMessage/ErrorDetails 的最大长度保持一致，
+    // 避免超长堆栈写库时被截断报错、掩盖真实失败原因。
+    private const int MaxErrorMessageLength = 500;
+    private const int MaxErrorDetailsLength = 4000;
+
+    private static string? Truncate(string? value, int maxLength)
+        => value is null || value.Length <= maxLength ? value : value[..maxLength];
 
     // 是否可以重试（基于最大重试次数和冷却时间）
     public bool CanRetry(int maxRetryCount = 3, TimeSpan? cooldownPeriod = null)

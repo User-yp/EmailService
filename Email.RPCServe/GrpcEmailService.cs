@@ -1,16 +1,17 @@
-﻿using Email.Infrastructure.Application;
+using Email.Domain.IApplication;
 using Grpc.Core;
-namespace Email.RPCServe;
 
+namespace Email.RPCServe;
 
 public class GrpcEmailService : EmailService.EmailServiceBase
 {
-    private readonly DomainService _emailApp;
+    private readonly IDomainService _emailApp;
 
-    public GrpcEmailService(DomainService emailApp)
+    public GrpcEmailService(IDomainService emailApp)
     {
-        this._emailApp = emailApp;
+        _emailApp = emailApp;
     }
+
     public override async Task<EmailResponse> SendEmail(EmailRequest request, ServerCallContext context)
     {
         try

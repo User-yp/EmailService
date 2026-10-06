@@ -45,11 +45,34 @@ public partial class EmailMessage
                 attachment.ClearContent();
         }
     }
-    public void MarkAsFailed(string errorMessage = null, string errorDetails = null)
+    public void MarkAsFailed(string? errorMessage = null, string? errorDetails = null)
         => Record.MarkAsFailed(errorMessage, errorDetails);
-    public void MarkForRetry(List<string> failedAdress, string errorMessage = null, string errorDetails = null)
+    public void MarkForRetry(List<string>? failedAdress, string? errorMessage = null, string? errorDetails = null)
         => Record.MarkForRetry(failedAdress, errorMessage, errorDetails);
 
     public bool CanRetry(int maxRetryCount = 3, TimeSpan? cooldownPeriod = null)
         => Record.CanRetry(maxRetryCount, cooldownPeriod);
+
+    // 软删除聚合：邮件连同其发送记录、附件一起置位删除标记
+    public override void MarkAsDeleted()
+    {
+        base.MarkAsDeleted();
+
+        Record?.MarkAsDeleted();
+        foreach (var attachment in Attachments)
+        {
+            attachment.MarkAsDeleted();
+        }
+    }
+
+    public override void Restore()
+    {
+        base.Restore();
+
+        Record?.Restore();
+        foreach (var attachment in Attachments)
+        {
+            attachment.Restore();
+        }
+    }
 }

@@ -2,9 +2,11 @@
 using Email.Domain.Entity;
 using Email.Domain.IRepository;
 using Email.Extension.Attributes;
+using Email.Extension.Option;
 using Email.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Email.Infrastructure.Repository;
 
@@ -12,15 +14,20 @@ namespace Email.Infrastructure.Repository;
 public class EmailRepository : IEmailRepository
 {
     private readonly EmailDbContext _context;
-    private readonly IFtpService ftpService;
+    private readonly IFtpService _ftpService;
+    private readonly FtpSettings _ftpSettings;
+    private readonly ILogger<EmailRepository> _logger;
 
-    public EmailRepository(EmailDbContext context, IFtpService ftpService)
+    public EmailRepository(EmailDbContext context, IFtpService ftpService, FtpSettings ftpSettings,
+        ILogger<EmailRepository> logger)
     {
         _context = context;
-        this.ftpService = ftpService;
+        _ftpService = ftpService;
+        _ftpSettings = ftpSettings;
+        _logger = logger;
     }
 
-    public async Task<EmailMessage> GetByIdAsync(Guid id)
+    public async Task<EmailMessage?> GetByIdAsync(Guid id)
     {
         return await _context.EmailMessages
             .Include(e => e.Attachments)
@@ -28,7 +35,7 @@ public class EmailRepository : IEmailRepository
             .FirstOrDefaultAsync(e => e.Id == id);
     }
 
-    public async Task<EmailMessage> GetByIdWithAttachmentsAsync(Guid id)
+    public async Task<EmailMessage?> GetByIdWithAttachmentsAsync(Guid id)
     {
         return await _context.EmailMessages
             .Include(e => e.Attachments)
@@ -44,20 +51,27 @@ public class EmailRepository : IEmailRepository
             .ToListAsync();
     }
 
-    public async Task<IEnumerable<EmailRecord>> GetFailedRecordsAsync(int maxRetryCount = 3)
+    public async Task<IEnumerable<EmailMessage>> GetRecentAsync(int take, CancellationToken cancellationToken = default)
     {
-        return await _context.EmailRecords
-            .Where(r => r.Status == EmailStatus.Failed && r.RetryCount < maxRetryCount)
-            .Include(r => r.EmailMessage)
-            .ToListAsync();
+        return await _context.EmailMessages
+            .Include(e => e.Attachments)
+            .Include(e => e.Record)
+            .OrderByDescending(e => e.CreatedAt)
+            // 服务端限制单次返回数量，避免全表加载
+            .Take(Math.Clamp(take, 1, 200))
+            .ToListAsync(cancellationToken);
     }
 
-    public async Task<IEnumerable<EmailRecord>> GetPendingRecordsAsync()
+    public async Task<IEnumerable<EmailRecord>> GetRetryableRecordsAsync(int maxRetryCount, int batchSize,
+        CancellationToken cancellationToken = default)
     {
         return await _context.EmailRecords
-            .Where(r => r.Status == EmailStatus.Retry)
-            .Include(r => r.EmailMessage)
-            .ToListAsync();
+            .Where(r => (r.Status == EmailStatus.Failed || r.Status == EmailStatus.Retry)
+                        && r.RetryCount < maxRetryCount
+                        && !r.EmailMessage.IsDeleted)
+            .OrderBy(r => r.UpdatedAt)
+            .Take(batchSize)
+            .ToListAsync(cancellationToken);
     }
 
     public async Task AddAsync(EmailMessage emailMessage)
@@ -78,12 +92,12 @@ public class EmailRepository : IEmailRepository
         await _context.SaveChangesAsync();
     }
 
-    public async Task<Attachment> GetAttachmentByIdAsync(Guid attachmentId)
+    public async Task<Attachment?> GetAttachmentByIdAsync(Guid attachmentId)
     {
         return await _context.EmailAttachments.FindAsync(attachmentId);
     }
 
-    public async Task<EmailRecord> GetRecordByMessageIdAsync(Guid emailMessageId)
+    public async Task<EmailRecord?> GetRecordByMessageIdAsync(Guid emailMessageId)
     {
         return await _context.EmailRecords
             .Include(r => r.EmailMessage)
@@ -95,22 +109,44 @@ public class EmailRepository : IEmailRepository
     }
     public async Task UploadFtpAsync(EmailMessage emailMessage)
     {
-        foreach (var attachment in emailMessage.Attachments.Where(a => !a.IsStoredInFtp))
+        if (!_ftpSettings.Enabled)
+        {
+            _logger.LogDebug("FTP 附件归档已关闭，{Count} 个附件保留在数据库中", emailMessage.Attachments.Count);
+            return;
+        }
+
+        foreach (var attachment in emailMessage.Attachments.Where(a => !a.IsStoredInFtp && a.Content.Length > 0))
         {
             try
             {
                 using var memoryStream = new MemoryStream(attachment.Content);
-                var ftpFilePath = await ftpService.UploadFileAsync(memoryStream, attachment.FileName, emailMessage.Id);
+                var ftpFilePath = await _ftpService.UploadFileAsync(memoryStream, attachment.FileName, emailMessage.Id);
 
                 // 更新附件的FTP信息
                 attachment.UpdateFtpInfo(ftpFilePath);
+                _logger.LogInformation("附件 {FileName} 已归档到 FTP：{FtpPath}", attachment.FileName, ftpFilePath);
             }
             catch (Exception ex)
             {
                 // FTP 上传失败不阻止邮件发送流程，记录日志后继续
-                System.Diagnostics.Debug.WriteLine(
-                    $"Warning: Failed to upload attachment {attachment.FileName} to FTP: {ex.Message}");
+                _logger.LogWarning(ex, "附件 {FileName} 归档到 FTP 失败，内容保留在数据库中", attachment.FileName);
             }
         }
+    }
+
+    public async Task<bool> SoftDeleteAsync(Guid emailId)
+    {
+        var emailMessage = await _context.EmailMessages
+            .Include(e => e.Attachments)
+            .Include(e => e.Record)
+            .FirstOrDefaultAsync(e => e.Id == emailId);
+
+        if (emailMessage == null)
+            return false;
+
+        // 聚合根统一置位删除标记，同时级联到发送记录与附件
+        emailMessage.MarkAsDeleted();
+        await _context.SaveChangesAsync();
+        return true;
     }
 }

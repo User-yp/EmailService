@@ -9,7 +9,7 @@ public partial class Attachment
     }
     public static Attachment Create(string fileName, string contentType, byte[] content)
     {
-        return new Attachment(fileName, contentType, content, content.Length / 1024);
+        return new Attachment(fileName, contentType, content, content.Length);
     }
 
     public void ClearContent()
