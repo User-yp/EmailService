@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Email.RPCServe", "Email.RPC
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Email.Tests", "Email.Tests\Email.Tests.csproj", "{4720E4A7-E001-4FF9-B4F3-4921CE544FE1}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Email.WebApp", "Email.WebApp\Email.WebApp.csproj", "{FC0E6041-6007-4E40-AD5A-1A7E4340221E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -45,6 +47,10 @@ Global
 		{4720E4A7-E001-4FF9-B4F3-4921CE544FE1}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4720E4A7-E001-4FF9-B4F3-4921CE544FE1}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4720E4A7-E001-4FF9-B4F3-4921CE544FE1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FC0E6041-6007-4E40-AD5A-1A7E4340221E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FC0E6041-6007-4E40-AD5A-1A7E4340221E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FC0E6041-6007-4E40-AD5A-1A7E4340221E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FC0E6041-6007-4E40-AD5A-1A7E4340221E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -1,6 +1,7 @@
 using Email.Domain;
 using Email.Domain.Entity;
 using Email.Domain.IRepository;
+using Email.Domain.Models;
 
 namespace Email.Tests.Fakes;
 
@@ -65,6 +66,57 @@ internal sealed class FakeEmailRepository : IEmailRepository
         => Task.FromResult(Find(emailMessageId)?.Record);
 
     public Task UpdateRecordAsync(EmailRecord emailRecord) => Task.CompletedTask;
+
+    public Task<PagedResult<EmailSummary>> SearchAsync(EmailQueryFilter filter, CancellationToken cancellationToken = default)
+    {
+        var query = _store.Values
+            .Where(m => filter.Status == null || m.Record.Status == filter.Status)
+            .Where(m => string.IsNullOrWhiteSpace(filter.Keyword)
+                        || m.Subject.Contains(filter.Keyword, StringComparison.OrdinalIgnoreCase)
+                        || m.To.Any(t => t.Contains(filter.Keyword, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        var items = query
+            .OrderByDescending(m => m.CreatedAt)
+            .Skip(filter.Skip)
+            .Take(filter.NormalizedPageSize)
+            .Select(m => new EmailSummary
+            {
+                Id = m.Id,
+                To = m.To,
+                Subject = m.Subject,
+                Status = m.Record.Status,
+                RetryCount = m.Record.RetryCount,
+                AttachmentCount = m.Attachments.Count,
+                CreatedAt = m.CreatedAt
+            })
+            .ToList();
+
+        return Task.FromResult(new PagedResult<EmailSummary>
+        {
+            Items = items,
+            Total = query.Count,
+            Page = filter.NormalizedPage,
+            PageSize = filter.NormalizedPageSize
+        });
+    }
+
+    public Task<EmailStatistics> GetStatisticsAsync(CancellationToken cancellationToken = default)
+    {
+        var messages = _store.Values.ToList();
+
+        return Task.FromResult(new EmailStatistics
+        {
+            Total = messages.Count,
+            Draft = messages.Count(m => m.Record.Status == EmailStatus.Draft),
+            Init = messages.Count(m => m.Record.Status == EmailStatus.Init),
+            Sent = messages.Count(m => m.Record.Status == EmailStatus.Sent),
+            Failed = messages.Count(m => m.Record.Status == EmailStatus.Failed),
+            Retry = messages.Count(m => m.Record.Status == EmailStatus.Retry),
+            AttachmentCount = messages.Sum(m => m.Attachments.Count),
+            LastSentTime = messages.Where(m => m.Record.SentTime.HasValue).Max(m => m.Record.SentTime)
+        });
+    }
 
     public Task<bool> SoftDeleteAsync(Guid emailId)
     {

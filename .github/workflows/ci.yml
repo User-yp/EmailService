@@ -34,3 +34,11 @@ jobs:
 
       - name: 运行单元测试
         run: dotnet test EmailService.sln --configuration Release --no-build --no-restore --verbosity normal
+
+      - name: 安装 Node（仅用于前端模板静态校验，无需 npm install）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: 校验 Vue 组件模板
+        run: node tools/check-vue-templates.js

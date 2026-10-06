@@ -1,9 +1,11 @@
 ﻿using Email.Domain;
 using Email.Domain.Entity;
+using Email.Domain.Models;
 using Email.Domain.IRepository;
 using Email.Extension.Attributes;
 using Email.Extension.Option;
 using Email.Infrastructure;
+using Email.Infrastructure.Query;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -60,6 +62,71 @@ public class EmailRepository : IEmailRepository
             // 服务端限制单次返回数量，避免全表加载
             .Take(Math.Clamp(take, 1, 200))
             .ToListAsync(cancellationToken);
+    }
+
+    public async Task<PagedResult<EmailSummary>> SearchAsync(EmailQueryFilter filter, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+
+        // 总数必须用未分页的查询统计，否则会退化成"只统计当前页"
+        var total = await EmailQueryComposer.ComposeFiltered(_context.EmailMessages, filter)
+            .CountAsync(cancellationToken);
+
+        var items = new List<EmailSummary>();
+        if (total > 0)
+        {
+            items = await EmailQueryComposer.ComposeSearch(_context.EmailMessages, filter)
+                .ToListAsync(cancellationToken);
+        }
+
+        return new PagedResult<EmailSummary>
+        {
+            Items = items,
+            Total = total,
+            Page = filter.NormalizedPage,
+            PageSize = filter.NormalizedPageSize
+        };
+    }
+
+    public async Task<EmailStatistics> GetStatisticsAsync(CancellationToken cancellationToken = default)
+    {
+        var counts = await EmailQueryComposer.ComposeStatusCounts(_context.EmailMessages)
+            .ToListAsync(cancellationToken);
+
+        var statistics = new EmailStatistics
+        {
+            Total = counts.Sum(c => c.Count),
+            AttachmentCount = await _context.EmailAttachments.CountAsync(cancellationToken),
+            LastSentTime = await _context.EmailRecords
+                .Where(r => r.SentTime != null)
+                .OrderByDescending(r => r.SentTime)
+                .Select(r => r.SentTime)
+                .FirstOrDefaultAsync(cancellationToken)
+        };
+
+        foreach (var item in counts)
+        {
+            switch (item.Status)
+            {
+                case EmailStatus.Draft:
+                    statistics.Draft = item.Count;
+                    break;
+                case EmailStatus.Init:
+                    statistics.Init = item.Count;
+                    break;
+                case EmailStatus.Sent:
+                    statistics.Sent = item.Count;
+                    break;
+                case EmailStatus.Failed:
+                    statistics.Failed = item.Count;
+                    break;
+                case EmailStatus.Retry:
+                    statistics.Retry = item.Count;
+                    break;
+            }
+        }
+
+        return statistics;
     }
 
     public async Task<IEnumerable<EmailRecord>> GetRetryableRecordsAsync(int maxRetryCount, int batchSize,

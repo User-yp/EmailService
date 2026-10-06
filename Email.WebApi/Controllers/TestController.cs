@@ -1,14 +1,10 @@
 using Email.Domain.Entity;
 using Email.Domain.IApplication;
 using Email.Domain.IRepository;
-using Email.Infrastructure;
 using Email.Infrastructure.Factory;
-using Email.Extension.Option;
 using Email.WebApi.Models;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using StackExchange.Redis;
-using System.Diagnostics;
+using DomainDiagnosticItem = Email.Domain.Models.DiagnosticItem;
 
 namespace Email.WebApi.Controllers;
 
@@ -25,8 +21,7 @@ public class TestController : ControllerBase
     private readonly IEmailHandler _emailHandler;
     private readonly IFtpService _ftpService;
     private readonly SmtpClientFactory _smtpClientFactory;
-    private readonly IDbContextFactory<EmailDbContext> _dbContextFactory;
-    private readonly RedisOption _redisOption;
+    private readonly ISystemDiagnosticsService _diagnosticsService;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<TestController> _logger;
 
@@ -36,8 +31,7 @@ public class TestController : ControllerBase
         IEmailHandler emailHandler,
         IFtpService ftpService,
         SmtpClientFactory smtpClientFactory,
-        IDbContextFactory<EmailDbContext> dbContextFactory,
-        RedisOption redisOption,
+        ISystemDiagnosticsService diagnosticsService,
         IWebHostEnvironment environment,
         ILogger<TestController> logger)
     {
@@ -46,8 +40,7 @@ public class TestController : ControllerBase
         _emailHandler = emailHandler;
         _ftpService = ftpService;
         _smtpClientFactory = smtpClientFactory;
-        _dbContextFactory = dbContextFactory;
-        _redisOption = redisOption;
+        _diagnosticsService = diagnosticsService;
         _environment = environment;
         _logger = logger;
     }
@@ -60,39 +53,15 @@ public class TestController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> DiagnosticsAsync(CancellationToken cancellationToken)
     {
-        var smtp = await ProbeAsync("SMTP", async () =>
-        {
-            var ok = await _smtpClientFactory.TestConnectionAsync();
-            return (ok, ok ? "SMTP 连接与认证正常" : "SMTP 连接或认证失败，详见服务日志");
-        });
-
-        var ftp = await ProbeAsync("FTP", async () =>
-        {
-            var ok = await _ftpService.TestConnectionAsync();
-            return (ok, ok ? "FTP 连接正常" : "FTP 连接失败，详见服务日志");
-        });
-
-        var database = await ProbeAsync("Database", async () =>
-        {
-            await using var context = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-            var ok = await context.Database.CanConnectAsync(cancellationToken);
-            return (ok, ok ? "数据库可连接" : "数据库不可连接");
-        });
-
-        var redis = await ProbeAsync("Redis", async () =>
-        {
-            using var connection = await ConnectionMultiplexer.ConnectAsync(_redisOption.ConnectionString);
-            var latency = await connection.GetDatabase(_redisOption.DbNumber).PingAsync();
-            return (true, $"Redis PING 往返 {latency.TotalMilliseconds:F0} ms");
-        });
+        var diagnostics = await _diagnosticsService.CheckAsync(cancellationToken);
 
         return Ok(new DiagnosticsResponse
         {
             Environment = _environment.EnvironmentName,
-            Smtp = smtp,
-            Ftp = ftp,
-            Database = database,
-            Redis = redis
+            Smtp = ToItem(diagnostics.Smtp),
+            Ftp = ToItem(diagnostics.Ftp),
+            Database = ToItem(diagnostics.Database),
+            Redis = ToItem(diagnostics.Redis)
         });
     }
 
@@ -369,31 +338,10 @@ public class TestController : ControllerBase
         }
     }
 
-    /// <summary>
-    /// 执行一次探测：返回 (是否通过, 说明)；抛异常时按失败处理。
-    /// </summary>
-    private async Task<DiagnosticItem> ProbeAsync(string target, Func<Task<(bool Success, string Message)>> probe)
+    private static DiagnosticItem ToItem(DomainDiagnosticItem source) => new()
     {
-        var stopwatch = Stopwatch.StartNew();
-        try
-        {
-            var (success, message) = await probe();
-            return new DiagnosticItem
-            {
-                Success = success,
-                Message = message,
-                ElapsedMilliseconds = stopwatch.ElapsedMilliseconds
-            };
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "{Target} 连通性检查失败", target);
-            return new DiagnosticItem
-            {
-                Success = false,
-                Message = $"{ex.GetType().Name}: {ex.Message}",
-                ElapsedMilliseconds = stopwatch.ElapsedMilliseconds
-            };
-        }
-    }
+        Success = source.Success,
+        Message = source.Message,
+        ElapsedMilliseconds = source.ElapsedMilliseconds
+    };
 }

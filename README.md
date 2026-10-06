@@ -9,6 +9,7 @@
 ## 特性概览
 
 - **双协议接入** — 同时提供 RESTful HTTP API 与 gRPC（含流式上传），满足不同场景需求
+- **Vue 3 前端控制台** — `Email.WebApp` 内嵌 Vue 3 SPA（运行时随项目提供，免 npm 构建），提供概览 / 邮件列表 / 详情 / 发信 / 依赖诊断页面
 - **SMTP 连接管理** — 基于 MailKit 的复用连接（后台健康检测、空闲回收、自动重连），发送串行化以保证并发安全
 - **邮件状态追踪** — 每封邮件对应一条 `EmailRecord`，记录发送状态、失败原因与重试次数
 - **失败自动重试** — 内置后台调度服务，按「次数上限 + 冷却时间」扫描失败邮件并重投，同时支持手动重试
@@ -99,18 +100,28 @@ EmailService/
 │   └── RPCExtension.cs                       # gRPC 注册扩展
 │
 ├── Email.WebApi/                             # Web API 宿主
-    ├── Program.cs                             # 应用入口
-    ├── Controllers/
-    │   └── TestController.cs                 # 测试控制器
-    ├── appsettings.json                       # 静态配置文件
-    └── Properties/
-        └── launchSettings.json                # 启动配置
+│   ├── Program.cs                             # 应用入口
+│   ├── Controllers/
+│   │   └── TestController.cs                 # 测试控制器
+│   ├── appsettings.json                       # 静态配置文件
+│   └── Properties/
+│       └── launchSettings.json                # 启动配置
+│
+├── Email.WebApp/                             # Vue 3 前端控制台 + JSON 接口
+│   ├── Program.cs                             # 应用入口（复用 InitService + SPA 回落）
+│   ├── Controllers/                           # /api/dashboard|emails|attachments|diagnostics|seed
+│   ├── Models/                                # 接口 DTO 与领域模型映射
+│   └── wwwroot/                               # 前端静态资源
+│       ├── index.html                         # SPA 外壳
+│       ├── js/                                # api / ui / pages / app（免构建 Vue 3）
+│       ├── css/app.css                        # 手写样式（不引 CDN）
+│       └── vendor/                            # Vue 3.4 + Vue Router 4.4 运行时（MIT）
 │
 └── Email.Tests/                              # xunit 单元测试（不依赖外部服务）
-    ├── Domain/                               # 重试策略、软删除、附件等领域规则
+    ├── Domain/                               # 重试策略、软删除、附件、分页等领域规则
     ├── Application/                          # DomainService 编排（内存替身）
-    ├── Infrastructure/                       # DbContext 软删除改写（EF InMemory）
-    └── Fakes/                                # 手写测试替身（仓储 / SMTP 处理器）
+    ├── Infrastructure/                       # DbContext 软删除、读模型查询、种子数据
+    └── Fakes/                                # 手写测试替身（仓储 / SMTP / FTP）
 ```
 
 ---
@@ -168,12 +179,14 @@ dotnet ef database update --project Email.Infrastructure --startup-project Email
 ### 5. 启动服务
 
 ```bash
-dotnet run --project Email.WebApi
+dotnet run --project Email.WebApi     # REST API + gRPC
+dotnet run --project Email.WebApp     # 前端控制台（http://localhost:5200）
 ```
 
 启动后：
 - REST API / Swagger：`http://localhost:5105/swagger`（有开发证书时同时监听 `https://localhost:7234/swagger`）
 - gRPC 端点：`http://localhost:6102`（明文 HTTP/2，h2c）
+- 前端控制台：`http://localhost:5200`（Vue 3 SPA：概览 `/`、邮件 `/emails`、发信 `/compose`、诊断 `/diagnostics`）
 
 > 端口由 `Ports` 配置节控制（`Grpc` / `Http` / `Https`）。Kestrel 在代码里显式声明了监听端点，
 > 因此 `launchSettings.json` 的 `applicationUrl` 与 `ASPNETCORE_URLS` 会被覆盖；
@@ -226,6 +239,73 @@ service EmailService {
 ```
 Metadata → Chunk₁ → Chunk₂ → ... → Chunkₙ → 服务器返回 EmailResponse
 ```
+
+---
+
+## 前端控制台（Email.WebApp，Vue 3）
+
+`Email.WebApp` 是本项目的第三个表现层，与 `Email.WebApi` / `Email.RPCServe` 共用同一套领域与基础设施：
+`Program.cs` 直接调用 `InitService`，Redis 动态配置、EF Core、SMTP / FTP、自动 DI 全部复用，没有第二套配置逻辑。
+
+前端是 **Vue 3 单页应用**，后端只提供 JSON 接口，两者同源部署：
+
+- `wwwroot/index.html` + `wwwroot/js/{api,ui,pages,app}.js` + `wwwroot/css/app.css`；
+- Vue 3.4 与 Vue Router 4.4 运行时**内置在 `wwwroot/vendor`**（MIT，见 `vendor/README.md`），
+  因此**不需要 npm install、不需要打包**，离线环境直接 `dotnet run` 即可使用；
+- `Program.cs` 用 `MapFallbackToFile` 把前端路由回落到 `index.html`，刷新 `/emails/xxx` 不会 404。
+- 没有浏览器也能校验模板：`node tools/check-vue-templates.js`（在 vm 沙箱里加载前端脚本并逐个编译组件模板）。
+
+### 页面与路由
+
+| 页面 | 路由 | 说明 |
+|---|---|---|
+| 概览 | `/` | 状态统计卡片、状态分布条、最近 8 封邮件、测试数据生成入口 |
+| 邮件列表 | `/emails` | 状态筛选、关键字搜索（主题模糊 / 收件人完整地址）、分页（10 / 20 / 50），筛选条件同步到 URL，刷新与前进后退都保持 |
+| 邮件详情 | `/emails/:id` | 基本信息、发送记录（失败原因 / 重试次数 / 失败地址）、HTML 预览（iframe sandbox）、附件下载、重试与软删除 |
+| 发送测试邮件 | `/compose` | 收件人 / 抄送 / 密送、HTML 开关、多附件上传，走完整发送链路 |
+| 依赖诊断 | `/diagnostics` | SMTP / FTP / 数据库 / Redis 四项连通性检测（与 WebApi 共用 `ISystemDiagnosticsService`） |
+
+详情页的「重试发送」「软删除」直接调用 `IDomainService`，重试策略（次数上限、冷却时间）仍由领域层裁决。
+
+### 后端接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/dashboard` | 状态统计 + 最近邮件 |
+| `GET` | `/api/emails` | 分页查询，参数 `status` / `keyword` / `page` / `pageSize` |
+| `GET` | `/api/emails/{id}` | 邮件详情（含发送记录与附件） |
+| `POST` | `/api/emails` | 发送邮件，`multipart/form-data`，字段 `to` / `cc` / `bcc` / `from` / `subject` / `body` / `isHtml` / `files` |
+| `POST` | `/api/emails/{id}/retry` | 手动重试 |
+| `DELETE` | `/api/emails/{id}` | 软删除 |
+| `GET` | `/api/attachments/{id}` | 附件下载（已归档 FTP 时自动回源） |
+| `GET` | `/api/diagnostics` | 依赖连通性 |
+| `POST` | `/api/seed` | 生成测试数据，参数 `count` / `append` |
+
+> 枚举统一按字符串序列化（`"Sent"` / `"Failed"` …），错误统一返回 `{ "error": "…" }`，
+> 便于前端直接把消息显示到提示条里。
+
+### 分层约定与扩展
+
+- **表现层**：`Controllers`（`/api/*` JSON 接口）+ `wwwroot`（Vue SPA），只做编排与展示，不含业务规则。
+- **应用层**：`IDomainService` / `ISystemDiagnosticsService` / `IDataSeeder` 定义在 `Email.Domain/IApplication`。
+- **基础设施层**：`SystemDiagnosticsService`、`DataSeeder`、`EmailQueryComposer`、`EmailRepository` 负责查询与写库。
+- 扩展新页面：`wwwroot/js/pages.js` 加页面组件 → `wwwroot/js/app.js` 注册路由 → 复用 `ui.js` 的共享组件与格式化函数。
+- 想升级为 Vite + `.vue` 单文件组件：把构建产物输出到 `wwwroot` 即可，后端接口与回落配置无需改动。
+
+### 生成测试数据
+
+概览页底部可一键生成测试数据（默认 24 封，范围 1~200；勾选「追加」则忽略"已有数据"检查强制生成）：
+
+- 直接写库、**不经过 SMTP**，不会真的发信；
+- 覆盖已发送 / 失败 / 重试中 / 待发送四种状态，部分邮件带 1~2 个附件；
+- 创建时间铺开到最近 14 天，列表与统计更接近真实场景；
+- 收件人统一使用 `@example.com` 保留域名，清理时执行：
+
+```sql
+DELETE FROM dbo.EmailMessage WHERE [To] LIKE '%@example.com%';
+```
+
+> WebApp 的 `appsettings.json` 中 `RetrySettings:Enabled` 为 `false`，避免 WebApp 与 WebApi 同时运行两套失败重试调度。
 
 ---
 
@@ -334,7 +414,7 @@ dotnet test Email.Tests                                   # 只跑单元测试�
 dotnet test --filter FullyQualifiedName~EmailRecordTests  # 按测试类筛选
 ```
 
-### 覆盖范围（51 个用例）
+### 覆盖范围（77 个用例）
 
 | 测试类 | 覆盖内容 |
 |---|---|
@@ -343,6 +423,10 @@ dotnet test --filter FullyQualifiedName~EmailRecordTests  # 按测试类筛选
 | `AttachmentTests` | `FileSize` 按字节存储、FTP 归档后清空数据库内容、空路径不误判为已归档 |
 | `EmailDbContextSoftDeleteTests` | `Remove` 被改写为软删除、全局查询过滤器生效、级联软删除、附件字段落库（EF InMemory） |
 | `DomainServiceTests` | 发送编排（入库→发送→标记状态→附件归档）、失败仍落库、FTP 归档失败不影响发送、重试策略、软删除委托 |
+| `PagedResultTests` | 分页模型：总页数向上取整、上下页判定、页码与页大小归一化 |
+| `EmailQueryComposerTests` | 读模型查询必须能下推 SQL：用 `ToQueryString()` 校验 LIKE / OPENJSON / OFFSET / GROUP BY，且不把附件二进制拉回来 |
+| `EmailRepositoryQueryTests` | 分页与排序、状态筛选、关键字匹配、页大小钳制、统计聚合与成功率（EF InMemory） |
+| `DataSeederTests` | 测试数据的状态分布、创建时间铺开、附件字节数、已有数据时跳过、append 追加、数量钳制 |
 
 ### 设计取舍
 

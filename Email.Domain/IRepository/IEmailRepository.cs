@@ -1,4 +1,5 @@
 ﻿using Email.Domain.Entity;
+using Email.Domain.Models;
 
 namespace Email.Domain.IRepository;
 
@@ -32,4 +33,14 @@ public interface IEmailRepository
     /// 软删除邮件（聚合根，连同其发送记录与附件）。
     /// </summary>
     Task<bool> SoftDeleteAsync(Guid emailId);
+
+    /// <summary>
+    /// 按条件分页查询邮件列表（投影为读模型，不加载正文与附件二进制）。
+    /// </summary>
+    Task<PagedResult<EmailSummary>> SearchAsync(EmailQueryFilter filter, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 统计各状态邮件数量、附件总数与最近一次发送时间。
+    /// </summary>
+    Task<EmailStatistics> GetStatisticsAsync(CancellationToken cancellationToken = default);
 }
